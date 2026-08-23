@@ -2,6 +2,11 @@
 
 A lightweight, high-throughput Python utility designed to discover, health-check, and audit resolution availability for **ArNS (Arweave Name System)** websites across the decentralized **AR.IO Gateway Network**.
 
+Cyberleek Domain search made easy.
+Find gateways easy. 
+
+502 Errors suck this tool automatically solves that
+
 ---
 
 ## 📌 Overview
