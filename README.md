@@ -62,12 +62,14 @@ MAX_WORKERS = 10
 
 ## 🔍 Classification Criteria
 
-Each audited gateway is categorized into one of three statuses:
+Each audited gateway is categorized into one of these statuses:
 
 | Status | Description | HTTP Indicators |
 | :--- | :--- | :--- |
-| **`WORKING / ACTIVE`** | Gateway is operational and serving site payload. | `HTTP 200 OK` + Payload verified |
+| **`WORKING / ACTIVE`** | Gateway is operational and serving site payload. | `HTTP 200 OK` + `x-arns-name` / `x-arns-resolved-id` header for the target name |
 | **`BLOCKED (Content Policy)`** | Node operator policy or moderation filter activated. | `HTTP 451 Unavailable For Legal Reasons` or body contains `"Content Policy"` / `"Blocked ID"` |
+| **`PARKED / FOR SALE`** | Gateway's domain lapsed and is now a parking or for-sale page. | No ArNS headers + parking page text, server or redirect |
+| **`FAILED (Not ArNS content)`** | Something answered, but it isn't serving the target site. | `HTTP 200 OK` without ArNS headers for the target name |
 | **`FAILED / UNREACHABLE`** | Gateway node is offline, misconfigured, or timing out. | `DNS resolution error`, `Connection refused`, `HTTP 5xx` |
 
 ---

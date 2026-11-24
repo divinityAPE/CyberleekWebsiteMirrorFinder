@@ -1,6 +1,8 @@
 import urllib.request
 import urllib.error
+import urllib.parse
 import json
+import re
 import time
 import socket
 import ssl
@@ -78,6 +80,52 @@ def fetch_gateways_from_registry():
 
     return sorted(list(gateways))
 
+# Signs of a domain that is parked or for sale. They only choose the label: a page
+# without the ArNS headers is never reported as working, whether or not one matches.
+PARKED_PAGE = re.compile(
+    r"(domain|website|site)( name)? (is|may be) for sale"
+    r"|buy this (domain|website)"
+    r"|this domain is parked"
+    r"|sedoparking|parkingcrew|bodis\.com|afternic\.com|hugedomains\.com|forsale\.godaddy\.com"
+    r"""|location(\.href)?\s*=\s*["']/lander\b""",  # GoDaddy / Afternic stub page
+    re.IGNORECASE)
+
+PARKING_HOST = re.compile(
+    r"(^|\.)(forsale\.godaddy\.com|afternic\.com|sedo\.com|sedoparking\.com"
+    r"|hugedomains\.com|dan\.com|bodis\.com)$",
+    re.IGNORECASE)
+
+def is_arns_response(headers):
+    """True if an AR.IO gateway resolved TARGET_NAME to produce this response."""
+    name = headers.get('x-arns-name')
+    if name is not None:
+        return name.strip().lower() == TARGET_NAME.lower()
+    # Older gateways may not send the name, only the transaction it resolved to
+    return bool(headers.get('x-arns-resolved-id'))
+
+def is_parked(resp, body):
+    """True if the response is a registrar's or reseller's parking page."""
+    return bool(
+        (resp.headers.get('Server') or '').lower().startswith('parking')
+        or PARKING_HOST.search(urllib.parse.urlsplit(resp.geturl()).hostname or '')
+        or PARKED_PAGE.search(body))
+
+def classify_response(resp, body):
+    """Returns (classification, details) for a response that isn't an HTTP error."""
+    verified = is_arns_response(resp.headers)
+    lowered = body.lower()
+
+    if not verified and is_parked(resp, body):
+        return ("PARKED / FOR SALE", "Domain is parked or for sale, not a gateway")
+    if "content policy" in lowered or "blocked id" in lowered or "censored" in lowered:
+        return ("BLOCKED (Content Policy)", "Blocked message detected in page body")
+    if resp.status != 200:
+        return (f"FAILED (HTTP {resp.status})", f"Status code {resp.status}")
+    if not verified:
+        return ("FAILED (Not ArNS content)", f"HTTP 200, but no ArNS headers for '{TARGET_NAME}'")
+    snippet = body[:100].replace('\n', ' ').strip()
+    return ("WORKING / ACTIVE", f"HTTP 200 OK | Snippet: {snippet[:40]}...")
+
 def test_gateway(gateway):
     """
     Tests an individual gateway for the target ARNS site.
@@ -95,16 +143,8 @@ def test_gateway(gateway):
         req = urllib.request.Request(subdomain_url, headers=headers)
         with urllib.request.urlopen(req, timeout=6, context=ssl_context) as resp:
             body = resp.read().decode('utf-8', errors='ignore')
-            status_code = resp.status
-            
-            # Check content policy / blocked indicators
-            if "content policy" in body.lower() or "blocked id" in body.lower() or "censored" in body.lower():
-                return (gateway, status_code, "BLOCKED (Content Policy)", f"Blocked message detected in page body", subdomain_url)
-            elif status_code == 200:
-                snippet = body[:100].replace('\n', ' ').strip()
-                return (gateway, status_code, "WORKING / ACTIVE", f"HTTP 200 OK | Snippet: {snippet[:40]}...", subdomain_url)
-            else:
-                return (gateway, status_code, f"HTTP {status_code}", f"Status code {status_code}", subdomain_url)
+            classification, details = classify_response(resp, body)
+            return (gateway, resp.status, classification, details, subdomain_url)
 
     except urllib.error.HTTPError as e:
         body = ""
@@ -141,15 +181,8 @@ def test_gateway_path(gateway):
         req = urllib.request.Request(path_url, headers=headers)
         with urllib.request.urlopen(req, timeout=6, context=ssl_context) as resp:
             body = resp.read().decode('utf-8', errors='ignore')
-            status_code = resp.status
-            
-            if "content policy" in body.lower() or "blocked id" in body.lower() or "censored" in body.lower():
-                return (gateway, status_code, "BLOCKED (Content Policy)", "Blocked message in body", path_url)
-            elif status_code == 200:
-                snippet = body[:100].replace('\n', ' ').strip()
-                return (gateway, status_code, "WORKING / ACTIVE", f"HTTP 200 OK | Snippet: {snippet[:40]}...", path_url)
-            else:
-                return (gateway, status_code, f"FAILED (HTTP {status_code})", f"Status code {status_code}", path_url)
+            classification, details = classify_response(resp, body)
+            return (gateway, resp.status, classification, details, path_url)
     except urllib.error.HTTPError as e:
         body = ""
         try:
@@ -174,6 +207,7 @@ def main():
     
     working_list = []
     blocked_list = []
+    parked_list = []
     failed_list = []
 
     print(f"{'GATEWAY':<25} | {'STATUS':<25} | {'DETAILS'}")
@@ -198,6 +232,9 @@ def main():
             elif "BLOCKED" in classification:
                 blocked_list.append(res_entry)
                 status_str = f"\033[93m{classification}\033[0m" if socket.has_ipv6 else classification
+            elif "PARKED" in classification:
+                parked_list.append(res_entry)
+                status_str = f"\033[93m{classification}\033[0m" if socket.has_ipv6 else classification
             else:
                 failed_list.append(res_entry)
                 status_str = f"\033[91m{classification}\033[0m" if socket.has_ipv6 else classification
@@ -209,6 +246,7 @@ def main():
     print("=" * 70)
     print(f"  [+] WORKING & UNBLOCKED GATEWAYS : {len(working_list)}")
     print(f"  [-] BLOCKED BY CONTENT POLICY    : {len(blocked_list)}")
+    print(f"  [$] PARKED / FOR SALE DOMAINS    : {len(parked_list)}")
     print(f"  [x] FAILED / OFFLINE GATEWAYS    : {len(failed_list)}")
     print("=" * 70)
 
